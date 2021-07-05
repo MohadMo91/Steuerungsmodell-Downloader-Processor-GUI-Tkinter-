@@ -1,0 +1,163 @@
+import os
+import pandas as pd
+import numpy as np
+import zipfile
+import sys
+
+import json
+import re
+
+import locale
+locale.setlocale(locale.LC_ALL, '')
+
+class Process():
+    projectNr = []
+    #pd.options.display.float_format = '{:n}'.format
+
+    df_all = pd.DataFrame()
+    frames = list()
+    kvz_detail_cols = {
+            'TRASSE_OI_HK':'sum','TRASSE_ERD_HK':'sum','TRASSE_UBKT_HK':'sum','TRASSE_IH_HK':'sum','TRASSE_OI_GFVZK_HK':'sum','TRASSE_UBKT_GFVZK_HK':'sum',
+            'TRASSE_IH_GFVZK_HK':'sum','TRASSE_ERD_GFVZK_HK':'sum','TRASSE_OI_GFVZK':'sum','TRASSE_UBKT_GFVZK':'sum','TRASSE_IH_GFVZK':'sum','TRASSE_ERD_GFVZK':'sum',
+            'TRASSE_OI_GFVZK_STICH':'sum','TRASSE_UBKT_GFVZK_STICH':'sum','TRASSE_IH_GFVZK_STICH':'sum','TRASSE_ERD_GFVZK_STICH':'sum','ROHRTRASSE_BLGT_GFVZK':'sum',
+            'ROHRTRASSE_BLGT_GFVZK_HK':'sum','ROHRTRASSE_BLGT_GFVZK_STICH':'sum','ROHRTRASSE_BLGT_HK':'sum','ROHRTRASSE_FREI_GFVZK':'sum','ROHRTRASSE_FREI_GFVZK_HK':'sum',
+            'ROHRTRASSE_FREI_GFVZK_STICH':'sum','ROHRTRASSE_FREI_HK':'sum','ROHRTRASSE_UBKT_GFVZK':'sum','ROHRTRASSE_UBKT_GFVZK_HK':'sum','ROHRTRASSE_UBKT_GFVZK_STICH':'sum',
+            'ROHRTRASSE_UBKT_HK':'sum'
+            }  # 28column
+
+#,'ANZ_ASB': 'sum'
+    def unzip(self, path,zip_files,file_xls_name ):#empty Constuctor
+        if zip_files:
+            pn=zip_files[0:8]
+            try:
+                zip_ref = zipfile.ZipFile(path+zip_files, 'r')
+                zip_ref.extract(pn+file_xls_name,path)
+                zip_ref.close()
+                print(file_xls_name+str(" extracted "))
+            except:
+                print(file_xls_name+str(" not found "))
+                pass
+        else:
+            sys.exit('No ZIP Files were Found')
+        return zip_files#, files_xls
+
+    def ReadFile(self,path):
+        df_kvz_detail = pd.DataFrame()
+        files = os.listdir(path)
+        xls_files = [f for f in files if f[-3:] == 'xls']
+        if xls_files:
+            for xls  in xls_files:
+                pn = xls[0:7]
+                if xls == pn+'_kvz_detail.xls':
+                    try:
+                        #open
+                        data = pd.read_excel(xls)
+                        df_kvz_detail = df_kvz_detail.append(data, sort =False)
+
+                        #join
+                        df_kvz_detail['ONB_ASB']=df_kvz_detail['ONB'].astype(str)+df_kvz_detail['ASB'].astype(str)
+
+                        # in case the Excel does't contain all wanted columns. So the program won't collapse
+                        final_dict = dict()
+                        final_list = list()
+                        cols = list(df_kvz_detail.columns)
+                        for colkey in self.kvz_detail_cols:
+                            if colkey in cols:
+                                # add only the existed (matched) columns to the final dict
+                                final_dict.update({colkey:'sum'})
+                                final_list.append(colkey)
+                            else:
+                                print("df_kvz_detail not matching ")
+
+
+                        #aggregate
+                        df_kvz_detail = df_kvz_detail.groupby('ONB_ASB').agg(final_dict)#dictionary
+
+                        # sum columns
+                        df_kvz_detail['Columns_Sum']=df_kvz_detail.sum(axis=1, skipna=True)
+
+
+                        # # #Trasse\Rohrtrasse_Summe
+                        trassevalue=0
+                        rohrtrassevalue=0
+                        for fl in df_kvz_detail.columns:
+                            #split the tow arts of rows
+                            if fl[0:6]=='TRASSE':
+                                trassevalue += df_kvz_detail[fl]
+                            elif fl[0:10]=='ROHRTRASSE':
+                                rohrtrassevalue+= df_kvz_detail[fl]
+                            #fill the sum value in new columns
+                            df_kvz_detail['TRASSE_SUM']=trassevalue
+                            df_kvz_detail['ROHRTRASSE_SUM']=rohrtrassevalue
+
+                        # Total rows
+                        df_kvz_detail=df_kvz_detail.append(df_kvz_detail.sum(skipna=True).rename('Total'))
+
+                        #Anteil_ASB
+                        df_kvz_detail['Anteil_ASB']=((df_kvz_detail['TRASSE_SUM']*70+df_kvz_detail['ROHRTRASSE_SUM']*30)/100)/((df_kvz_detail.at['Total','TRASSE_SUM']*70+df_kvz_detail.at['Total','ROHRTRASSE_SUM']*30)/100)
+
+                        # NEM Nummer
+                        df_kvz_detail['NEM'] = pn
+                        df_kvz_detail = df_kvz_detail.set_index('NEM', append=True)
+
+                        self.frames.append(df_kvz_detail)
+
+                    except EnvironmentError as err:
+                        print(err)
+                        print("df_kvz_detail Columns are not found ")
+                        pass
+        else:
+            print("No Excel Files found..1")
+            pass
+        self.df_all = pd.concat(self.frames, axis=0, sort=False)
+        #print(self.df_all)
+
+    def WriteFile(self, projectName):
+
+        pN = projectName[:7]
+        #list to save columns into it
+        cols = list(self.df_all.columns)
+        cols_to_drop = ['nannan', 'Columns_Sum','TRASSE_OI_HK', 'TRASSE_ERD_HK', 'TRASSE_UBKT_HK', 'TRASSE_IH_HK', 'TRASSE_OI_GFVZK_HK','TRASSE_UBKT_GFVZK_HK', 'TRASSE_IH_GFVZK_HK',
+                   'TRASSE_ERD_GFVZK_HK', 'TRASSE_OI_GFVZK', 'TRASSE_UBKT_GFVZK', 'TRASSE_IH_GFVZK', 'TRASSE_ERD_GFVZK',
+                   'TRASSE_OI_GFVZK_STICH', 'TRASSE_UBKT_GFVZK_STICH',
+                   'TRASSE_IH_GFVZK_STICH', 'TRASSE_ERD_GFVZK_STICH', 'ROHRTRASSE_BLGT_GFVZK',
+                   'ROHRTRASSE_BLGT_GFVZK_HK', 'ROHRTRASSE_BLGT_GFVZK_STICH', 'ROHRTRASSE_BLGT_HK',
+                   'ROHRTRASSE_FREI_GFVZK', 'ROHRTRASSE_FREI_GFVZK_HK', 'ROHRTRASSE_FREI_GFVZK_STICH',
+                   'ROHRTRASSE_FREI_HK', 'ROHRTRASSE_UBKT_GFVZK',
+                   'ROHRTRASSE_UBKT_GFVZK_HK', 'ROHRTRASSE_UBKT_GFVZK_STICH', 'ROHRTRASSE_UBKT_HK']
+        for i in cols:
+            if i == 'Anteil_ASB':
+                pass
+            else:
+                self.df_all[i]=(self.df_all[i]/self.df_all['Columns_Sum'])*100
+
+        try:
+            self.df_all = self.df_all.drop(['nannan'], axis=0)
+        except:
+            pass
+
+        #sort the result
+        self.df_all = self.df_all.reindex(sorted(self.df_all.columns), axis=1)
+
+        for drop in cols_to_drop:
+            try:
+                if drop:
+                    self.df_all=self.df_all.drop(drop, axis=1)
+                else:
+                    print("column not found to drop!")
+            except:
+                pass
+        self.df_all.fillna(0,inplace=True)
+
+        print(self.df_all)
+        output= self.df_all.to_excel("Final_MBFD_Anpassungen_TAMA_ASB_.xlsx")
+
+    ### Delete ###
+    def DeleteFile(self,path):
+        files = os.listdir(path)
+        zip_to_delete = [z for z in files if z[-3:] == 'zip']
+        xls_to_delete = [f for f in files if f[-3:] == 'xls']
+        for xtd in xls_to_delete:
+            os.remove(path+xtd)
+        #for ztd in zip_to_delete:
+            #os.remove(path+ztd)

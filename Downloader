@@ -1,0 +1,185 @@
+import hashlib
+import requests
+# import sha3
+import warnings
+import re
+import logging
+import os
+import zipfile
+import sys
+
+# https://stackoverflow.com/questions/44198824/singleton-class-using-metaclasses
+
+class Singleton(type):
+    """
+    DOC
+    """
+    _instances = {}
+
+    def __call__(cls, *args, **kwargs):
+        if cls not in cls._instances:
+            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
+            cls.x = 5
+        return cls._instances[cls]
+
+
+class NemAuthenticator(metaclass=Singleton):
+    cookies = {}
+    logInUrl=''
+    new_sessionId=''
+    projects = dict()
+
+    def __init__(self, environment='', sessionId='', username='', password=''):
+        self._environment = None
+        self._sessionId = None
+        self._username = None
+        self._password = None
+
+        self.environment = environment
+        self.sessionId = sessionId
+        self.username = username
+        self.password = password
+
+    @property
+    def environment(self):
+        return self._environment
+
+    @property
+    def sessionId(self):
+        return self._sessionId
+
+    @property
+    def username(self):
+        return self._username
+
+    @property
+    def password(self):
+        return self._password
+
+    @environment.setter
+    def environment(self, value):
+        self._environment = value
+
+    @sessionId.setter
+    def sessionId(self, value):
+        self._sessionId = value
+
+    @username.setter
+    def username(self, value):
+        self._username = value
+
+    @password.setter
+    def password(self, value):
+        self._password = value
+
+    @environment.deleter
+    def environment(self):
+        del self._environment
+
+    @sessionId.deleter
+    def sessionId(self):
+        del self._sessionId
+
+    @username.deleter
+    def username(self):
+        del self._username
+
+    @password.deleter
+    def password(self):
+        del self._password
+
+    def __str__(self):
+        return repr(self) + self.val
+
+    def auth(self):
+        # this is to supress warnings that occur, because https urls cannot be validated
+        warnings.filterwarnings("ignore")
+        print("DEBUG: self_sessionId: " + str(self.sessionId))
+        # make request cookie from session id
+        self.cookies = {'JSESSIONID': self.sessionId}
+        # check if user is already authenticated, else create a new session
+        checkLoggedInUrl = 'URL' + self.environment + '/projekt?getProjList'
+        checkLoggedInResponse = requests.get(checkLoggedInUrl, cookies=self.cookies, verify=False)
+        print("DEBUG: checkLoggedInResponse.text " + str(checkLoggedInResponse.text))
+        #print(checkLoggedInResponse )#>200
+        if ('not logged in' in checkLoggedInResponse.text):
+            # if the above error message is not given, the user is already logged in and the session id can be re-used
+            # else proceed with obtaining a new session id
+            # retrieve a session id
+            print("DEBUG: Obtaining new session id")
+            retrieveSessionUrl = 'URL' + self.environment + '/'
+            retrieveSessionResponse = requests.get(retrieveSessionUrl, verify=False)
+
+            # store unauthenticated session id
+            self.sessionId = retrieveSessionResponse.cookies['JSESSIONID']
+            self.cookies['JSESSIONID'] = self.sessionId  # overwrite cookie
+            self.new_sessionId=self.sessionId
+
+
+            # hash username and password
+            hashStr = self.username + '*' + self.password
+            # sha3Func = sha3.keccak_512() #This is the old, incompatible SHA3 implementation
+            sha3Func = hashlib.sha3_512()
+            sha3Func.update(hashStr.encode())
+            passwordHashed = sha3Func.hexdigest()
+            #print(passwordHashed)
+
+            # build auth url
+            loginUrl = 'URL' + self.environment + '/login?login=1&user=' + self.username + '&sha3=' + passwordHashed + '&callUrl=https:URL' + self.environment + '/'
+            self.logInUrl=loginUrl
+            #print(loginUrl) works open and login!!!!!!
+            loginResponse = requests.get(loginUrl, cookies=self.cookies, verify=False)
+            #print(loginResponse.text)#shows the source code of the right page
+            # there is a 302 forwarding, in which a new session id is genereated which is also authenticated
+            # this code is a bit fragile, though ;)
+            self.sessionId = loginResponse.history[0].cookies['JSESSIONID']
+        print("Logged in!")
+        return self.new_sessionId
+
+    def downloader(self, jobFileName): #jobFileName: CSV List
+        # specify the project ids and designated filenames
+        # jobFileName = 'to_be_downloaded.csv'
+        jobFile = open(jobFileName, 'r')
+
+        # each line should be like this regex pattern
+        jobLinePattern =  '([0-9]{6}|[0-9]{7}|[0-9]{8});(.*)'
+
+        # in this dict will the download jobs be stored
+
+        lineNumber = 1
+        for line in jobFile:
+            if (lineNumber == 1):
+                pass
+            else:
+                # read each line and check if it matches the pattern
+                lineMatch = re.match(jobLinePattern, line)
+                # only if the pattern seemed to match
+                if (2 == len(lineMatch.groups())):
+                    project = lineMatch.group(1)
+                    fileName = lineMatch.group(2)
+                    # store the project and designated filenames
+                    self.projects[project] = fileName
+            lineNumber += 1
+        jobFile.close()
+        print(len(self.projects),' projects were found ')
+        Anzahl = 1
+        # for each project, download the data
+        for project, fileName in self.projects.items():
+            downloadUrl = 'https:URL' + self.environment + '/files?getResults=1&projnr=' + project +'&projname='+fileName
+            downloadResponse = requests.get(downloadUrl, cookies=self.cookies, verify=False)
+            # only if there is no error message
+            Full_Name = project+"_"+fileName
+            print("Download project ", project, "from environment", self.environment, "and storing in file",Full_Name)
+            print(' # ' + str(Anzahl) + ' Downloading... Please wait..')
+            Anzahl+=1
+            if (downloadResponse.text != "<script>alert('not logged in');window.parent.location.href='/mbfd_test'</script>')"):
+                # write downloaded binary content into file
+                file = open(Full_Name + '.zip', 'wb')
+                file.write(downloadResponse.content)
+                file.close()
+                print("Project successfully downloaded")
+
+            else:
+                print("An error occurred")
+        return self.projects
+

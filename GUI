@@ -1,0 +1,187 @@
+from tkinter import *
+from tkinter import filedialog
+import tkinter.ttk
+from tkinter import Button, Tk, HORIZONTAL
+from tkinter.ttk import Progressbar
+from tkinter import messagebox
+
+
+import os
+import time
+
+from Processor import *
+from Downloader import *
+
+def percentageCalculator(x, y, case=1):
+    """Calculate percentages
+       Case1: What is x% of y?
+       Case2: x is what percent of y?
+       Case3: What is the percentage increase/decrease from x to y?
+    """
+    if case == 1:
+        #Case1: What is x% of y?
+        r = x/100*y
+        return r
+    elif case == 2:
+        #Case2: x is what percent of y?
+        r = x/y*100
+        return r
+    elif case == 3:
+        #Case3: What is the percentage increase/decrease from x to y?
+        r = (y-x)/x*100
+        return r
+    else:
+        raise Exception("Only case 1,2 and 3 are available!")
+
+def processEntry(entries):
+    infoDict = {}
+    for entry in entries:
+        field = entry[0]
+        text = entry[1].get()
+        infoDict[field] = text
+
+    return infoDict
+
+def makeform(root):
+    #JSON
+    cred = Label(root, text='Load Credentials File')
+    credbtn = Button(root, text='open JSON', command=opencred)
+    credent = Entry(root, text=jsonfile, state=DISABLED, width=75)
+    cred.grid(row=0, sticky=E)
+    credbtn.grid(row=1, column=0)
+    credent.grid(row=1, column=1)
+    tkinter.ttk.Separator(root, orient=HORIZONTAL).grid(row=2, columnspan=2, sticky='we')
+    tkinter.ttk.Separator(root, orient=HORIZONTAL).grid(row=3, columnspan=2, sticky='we')
+
+    #CSV
+    list = Label(root, text='Load Projects List')
+    listbtn = Button(root, text='open CSV', command=openlist)
+    listent = Entry(root, text=csvfile, state=DISABLED, width=75)
+    list.grid(row=4, sticky=E)
+    listbtn.grid(row=5, column=0)
+    listent.grid(row=5, column=1)
+
+root = Tk()
+root.title("LK Steuerungsmodell TAMA-Daten")
+
+### JSON ###
+jsonfile = tkinter.StringVar()
+def opencred():
+    credfile = filedialog.askopenfilename( title="Select json file",filetypes = (("json files","*.json"),("all files","*.*")))
+    jsonfile.set(credfile)
+    #print(jsonfile.get())
+
+
+config = {
+    'environment': '',
+    'sessionId':'',
+    'username':'',
+    'password':''
+}
+def loadnemCredentials():
+    credFileName = jsonfile.get()
+    credFileName = os.path.expandvars(credFileName)
+
+    credFile = open(credFileName, 'r')
+    credJson = json.load(credFile)
+    credFile.close()
+
+    config['environment'] = credJson['environment']
+    config['sessionId'] = credJson['sessionId']
+    config['username'] = credJson['username']
+    config['password'] = credJson['password']
+
+### CSV ###
+csvfile = tkinter.StringVar()
+def openlist():
+    listfile = filedialog.askopenfilename( title="Select json file",filetypes = (("csv files","*.csv"),("all files","*.*")))
+    csvfile.set(listfile)
+
+
+proc = Process()
+path= os.path.dirname(os.path.abspath(__file__))+'\\'
+def Login_Download(status):
+    status['text'] = "Running.. Building the Connection"
+    root.update()
+    try:
+        loadnemCredentials()
+        # loads credentials where sessionId is empty
+        session_create = NemAuthenticator(**config)
+        # auth method creates a sessionID for the login
+        session_ID = NemAuthenticator.auth(session_create)
+        # refresh sessionId in config to paste the new generated one
+        config['sessionId'] = session_ID
+        # call the class again to make the connection
+        sesseion = NemAuthenticator(**config)
+        NemAuthenticator.auth(sesseion)
+
+        status['text'] = "Downloading Projects.. Please Wait.. "
+        root.update()
+
+        NemAuthenticator.downloader(sesseion, csvfile.get())#
+    except:
+        status['text'] = "Error: Please Select a valid JSON/CSV File"
+        root.update()
+
+
+def Process(progress, status):
+    Login_Download(status)
+    files = os.listdir(path)
+    zip_files = [z for z in files if z[-3:] == 'zip']
+    try:
+        p = 0
+        for zfile in zip_files:
+            try:
+                p += 1
+                unit = percentageCalculator(p, len(zip_files), case=2)
+
+                zfileNAME = zfile[:8]
+                print("extracting " + str(zfileNAME))
+                ## Case Sinsitive ##
+                proc.unzip(path, zfile, 'kvz_detail.xls')
+
+                print("processing " + str(zfileNAME))
+
+                # Read
+                proc.ReadFile(path)
+                proc.WriteFile(zfileNAME)
+                proc.DeleteFile(path)
+                print("done " + str(zfileNAME))
+
+                step = "Working on {}".format(zfileNAME)
+                progress['value'] = unit
+                percent['text'] = "{}%".format(int(unit))
+                status['text'] = "{}".format(step)
+                root.update()
+            except:
+                status['text'] = "{} Doesn't contain the required Excel Files".format(zfileNAME)
+                root.update()
+        messagebox.showinfo('Info', "Process completed!")
+
+    except Exception as e:
+        messagebox.showinfo('Info', "ERROR: {}".format(e))
+
+ents = makeform(root)
+
+runbtn=Button(text='Run', command=(lambda e=ents:Process(progress, status)))
+runbtn.grid(row=8, columnspan=2)
+
+tkinter.ttk.Separator(root, orient=HORIZONTAL).grid( row=9, columnspan=2,sticky='we')
+
+#Logging
+percent = Label(root, text="", anchor=S)
+progress = Progressbar(root, length=500, mode='determinate')
+status = Label(root, text="After loading the required JSON and CSV Files. Click Run to start", relief=SUNKEN, anchor=W, bd=2, width=65)
+percent.grid(row=10, columnspan=2)
+progress.grid(row=11, columnspan=2)
+status.grid(row=12, columnspan=2)
+
+
+tkinter.ttk.Separator(root, orient=HORIZONTAL).grid( row=13, columnspan=2,sticky='we')
+
+lbl = Label(root, text="MBfD Team-IT")
+clsbtn= Button(root, text="Close", command=root.destroy)
+lbl.grid(row=14, column=0, sticky='w')
+clsbtn.grid(row=14, column=1, sticky='we')
+
+root.mainloop()
